@@ -42,5 +42,4 @@ void publish_data(so_ring_buffer_t *rb, const char *filename)
 
 	close(fd);
 	ring_buffer_stop(rb);
-	pthread_cond_broadcast(&rb->full_cond);
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-3-Clause
-
+#define _XOPEN_SOURCE 600
 #include <pthread.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -7,15 +7,10 @@
 #include "consumer.h"
 #include "ring_buffer.h"
 #include "packet.h"
-#include "utils.h"
+#include "../utils/utils.h"
 
-static pthread_mutex_t mutex_write;
-static pthread_cond_t cond_write;
-static pthread_mutex_t mutex_wait;
-static pthread_cond_t cond_wait;
-static int threads_writing;
-static int threads_waiting;
 static int done;
+static pthread_barrier_t barrier;
 
 int compare_packets(const void *a, const void *b)
 {
@@ -34,7 +29,7 @@ void *consumer_thread(void *arg)
 	so_consumer_ctx_t *ctx = (so_consumer_ctx_t *)arg;
 	char packet[PKT_SZ], out_buf[PKT_SZ];
 	so_packet_t *pkt;
-	int ret, len;
+	int ret, len, n;
 
 	while (true) {
 		pthread_mutex_lock(&ctx->producer_rb->mutex_buffer);
@@ -66,13 +61,11 @@ void *consumer_thread(void *arg)
 		ctx->buffer[ctx->thread_id]->timestamp = pkt->hdr.timestamp;
 
 barrier:
-		pthread_mutex_lock(&mutex_write);
-		threads_writing++;
-		if (threads_writing == ctx->num_threads) {
+		if (pthread_barrier_wait(&barrier) == PTHREAD_BARRIER_SERIAL_THREAD) {
 			qsort(ctx->buffer, ctx->num_threads, sizeof(packet_data_t *), compare_packets);
 
-			int n = ctx->producer_rb->num_packets > ctx->num_threads
-						? ctx->num_threads : ctx->producer_rb->num_packets;
+			n = ctx->producer_rb->num_packets > ctx->num_threads ?
+						ctx->num_threads : ctx->producer_rb->num_packets;
 
 			if (n < ctx->num_threads)
 				done = 1;
@@ -84,24 +77,9 @@ barrier:
 							   ctx->buffer[i]->hash, ctx->buffer[i]->timestamp);
 				write(ctx->out_fd, out_buf, len);
 			}
-
-			threads_writing = 0;
-			pthread_cond_broadcast(&cond_write);
-		} else {
-			pthread_cond_wait(&cond_write, &mutex_write);
-		}
-		pthread_mutex_unlock(&mutex_write);
-
-		pthread_mutex_lock(&mutex_wait);
-		threads_waiting++;
-		if (threads_waiting == ctx->num_threads) {
-			threads_waiting = 0;
-			pthread_cond_broadcast(&cond_wait);
-		} else {
-			pthread_cond_wait(&cond_wait, &mutex_wait);
 		}
 
-		pthread_mutex_unlock(&mutex_wait);
+		pthread_barrier_wait(&barrier);
 
 		if (done)
 			break;
@@ -122,14 +100,8 @@ so_consumer_ctx_t **create_consumers(pthread_t *tids,
 	for (int i = 0; i < num_consumers; ++i)
 		buffer[i] = malloc(sizeof(packet_data_t));
 
-	ret = pthread_mutex_init(&mutex_write, NULL);
-	DIE(ret != 0, "mutex failed");
-	ret = pthread_mutex_init(&mutex_wait, NULL);
-	DIE(ret != 0, "mutex failed");
-	ret = pthread_cond_init(&cond_write, NULL);
-	DIE(ret != 0, "cond failed");
-	ret = pthread_cond_init(&cond_wait, NULL);
-	DIE(ret != 0, "cond failed");
+	ret = pthread_barrier_init(&barrier, NULL, num_consumers);
+	DIE(ret != 0, "barrier() failed");
 
 	so_consumer_ctx_t **ctx = (so_consumer_ctx_t **)malloc((num_consumers) * sizeof(so_consumer_ctx_t *));
 	int i;

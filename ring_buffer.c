@@ -77,5 +77,8 @@ void ring_buffer_destroy(so_ring_buffer_t *ring)
 
 void ring_buffer_stop(so_ring_buffer_t *ring)
 {
+	pthread_mutex_lock(&ring->mutex_buffer);
 	ring->done = 1;
+	pthread_cond_broadcast(&ring->full_cond);
+	pthread_mutex_unlock(&ring->mutex_buffer);
 }
